@@ -71,17 +71,17 @@ class MoviePlotter:
     def init(self):
         weather = self.weather
         files = self.files
+        direct_radiation = [get_radiation_direct(t.to_pydatetime()) for t in weather['time']]
         self.img = self.ax[0].imshow(files[0].read_image())
-        self.ax[1].plot(weather['time'], weather['solarradiation'], label='Measured')
-        self.ax[1].set_xlabel('Time (UTC)')
-        self.ax[1].set_ylabel('Insolation ($W/m^2$)')
 
+        self.directline = self.ax[1].plot(weather['time'], direct_radiation, label='Direct radiation')
+        self.ax[1].plot(weather['time'], weather['solarradiation'], label='Measured')
+        [self.solar_point] = self.ax[1].plot(weather['time'][0], weather['solarradiation'][0], 'ro', label='Current')
         self.tline = self.ax[1].axvline(weather['time'][0])
         self.wline = self.ax[1].axhline(weather['solarradiation'][0])
-        [self.solar_point] = self.ax[1].plot(weather['time'][0], weather['solarradiation'][0], 'ro', label='Current')
-
-        direct_radiation = [get_radiation_direct(t.to_pydatetime()) for t in weather['time']]
-        self.directline = self.ax[1].plot(weather['time'], direct_radiation, label='Direct radiation')
+        self.ax[1].set_xlabel('Date (UTC)')
+        self.ax[1].set_ylabel('Insolation ($W/m^2$)')
+        plt.xticks(rotation=45)
         self.ax[1].legend(loc='upper left')
 
     def __call__(self, file):
@@ -100,7 +100,7 @@ def _main():
     from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
     parser = ArgumentParser(description='Script description', formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Be verbose')
-    parser.add_argument('-o','--output', help='Output file', default='movie.mp4')
+    parser.add_argument('-o','--output', help='Output file')
     parser.add_argument('-s','--show', action='store_true', default=False, help='Show plot')
     parser.add_argument(dest='files', nargs='+')
     parser.set_defaults(verbose=False)
@@ -110,8 +110,6 @@ def _main():
     else:
         logging.basicConfig(level=logging.INFO)
 
-
-    os.makedirs(values.outdir, exist_ok=True)
     files = get_files(values)
     files = sorted(files, key=lambda f:f.date) # sort by date
     dates = [f.date for  f in files]
@@ -130,10 +128,12 @@ def _main():
     fig, axs = pylab.subplots(2,1, figsize=[6,8])
     plotter = MoviePlotter(fig, axs, weather, files)
     ani = animation.FuncAnimation(fig, plotter, files,
-        init_func=plotter.init, blit=False, interval=50,
+        init_func=plotter.init, blit=False, interval=100,
         repeat=False)
+
     if values.output:
-        ani.save(values.output)
+        logging.info('Writing output to %s', values.output)
+        ani.save(values.output, fps=10)
 
     if values.show:
         pylab.show()
