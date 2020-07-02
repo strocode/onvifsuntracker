@@ -57,8 +57,13 @@ def get_altitude(dutc):
 
 def get_radiation_direct(dutc):
     alt_deg = get_altitude(dutc)
-    rad_wm2 = radiation.get_radiation_direct(dutc, alt_deg)
+    rad_wm2 = radiation.get_radiation_direct(dutc, alt_deg)*np.sin(np.radians(alt_deg))
     return rad_wm2
+
+def hide_axes(ax):
+    ax.get_xaxis().set_visible(False)
+    ax.get_yaxis().set_visible(False)
+
 
 
 class MoviePlotter:
@@ -67,34 +72,120 @@ class MoviePlotter:
         self.ax = ax
         self.weather = weather
         self.files = files
+        self.lookahead = datetime.timedelta(minutes=15)
+
 
     def init(self):
         weather = self.weather
         files = self.files
-        direct_radiation = [get_radiation_direct(t.to_pydatetime()) for t in weather['time']]
-        self.img = self.ax[0].imshow(files[0].read_image())
+        self.direct_radiation = np.array([get_radiation_direct(t.to_pydatetime()) for t in weather['time']])
+        self.coeff = weather['solarradiation'].max()/self.direct_radiation.max()
+        self.diff = self.direct_radiation*self.coeff - weather['solarradiation']
 
-        self.directline = self.ax[1].plot(weather['time'], direct_radiation, label='Direct radiation')
-        self.ax[1].plot(weather['time'], weather['solarradiation'], label='Measured')
-        [self.solar_point] = self.ax[1].plot(weather['time'][0], weather['solarradiation'][0], 'ro', label='Current')
-        self.tline = self.ax[1].axvline(weather['time'][0])
-        self.wline = self.ax[1].axhline(weather['solarradiation'][0])
-        self.ax[1].set_xlabel('Date (UTC)')
-        self.ax[1].set_ylabel('Insolation ($W/m^2$)')
+        t0imgax = self.ax[0,0]
+        t5imgax = self.ax[0,1]
+        diffimgax = self.ax[0,2]
+        pltax = self.ax[1,2]
+        self.pltzoomax = self.ax[1,0]
+        self.pltdiffax = self.ax[1,1]
+
+        self.main_lines = self.plot_weather(pltax)
+        self.zoom_lines = self.plot_weather(self.pltzoomax)
+        self.diff_lines = self.plot_weather_diff(self.pltdiffax)
+
+        times = weather['time']
+        self.update_zoom(times[0])
+
+        self.img = t0imgax.imshow(files[0].read_image())
+        t0imgax.set_title('T=0')
+        self.t5img = t5imgax.imshow(files[0].read_image())
+        t5imgax.set_title('T=5min')
+        self.diffimg = diffimgax.imshow(files[0].read_image())
+        diffimgax.set_title('Difference T5min-T0min')
+        hide_axes(t0imgax)
+        hide_axes(t5imgax)
+        hide_axes(diffimgax)
+        self.update_imgs(0)
+
+
+    def update_zoom(self, t):
+        toff = self.lookahead
+        print('Updating zoom', t, toff, t-toff, t+toff)
+        self.pltzoomax.set_xlim(t - toff, t + toff)
+        self.pltdiffax.set_xlim(t - toff, t + toff)
+
+    def update_imgs(self, ifile):
+        file = self.files[ifile]
+        currimg = file.read_image()
+        self.img.set_data(currimg)
+        nextfile = ifile + 5 # TODO: actually calculate times
+
+        if nextfile < len(self.files):
+            nextimg = self.files[nextfile].read_image()
+            self.t5img.set_data(nextimg)
+            currb = np.asarray(currimg);
+            nextb = np.asarray(nextimg);
+            self.diffimg.set_data(nextb - currb)
+
+    def plot_weather(self, pltax):
+        weather = self.weather
+        coeff = self.coeff
+        time = weather['time']
+        measuredline = pltax.plot(time, weather['solarradiation'], label='Measured')
+        directline = pltax.plot(time, self.direct_radiation*coeff, label=f'Direct radiation x{coeff:0.2f}')
+        #ax2 = pltax.twinx()
+        #ax2.plot(time, self.diff, 'g', label='Difference')
+        [solar_point] = pltax.plot(time[0], weather['solarradiation'][0], 'ro', label='Current')
+        tline = pltax.axvline(time[0])
+        wline = pltax.axhline(weather['solarradiation'][0])
+        pltax.set_xlabel('Date (UTC)')
+        pltax.set_ylabel('Insolation ($W/m^2$)')
         plt.xticks(rotation=45)
-        self.ax[1].legend(loc='upper left')
+        pltax.legend(loc='lower left')
 
-    def __call__(self, file):
-        self.img.set_data(file.read_image())
-        d = pd.Timestamp(file.date.astimezone(datetime.timezone.utc).replace(tzinfo=None), tz='UTC')
+        return (directline, measuredline, solar_point, tline, wline)
+
+    def plot_weather_diff(self, pltax):
+        weather = self.weather
+        diff = self.diff
+        measuredline = pltax.plot(weather['time'], diff , label=f'Diffference')
+        directline = None
+        [solar_point] = pltax.plot(weather['time'][0], diff[0], 'ro', label='Current')
+        tline = pltax.axvline(weather['time'][0])
+        wline = pltax.axhline(diff[0])
+        pltax.set_xlabel('Date (UTC)')
+        pltax.set_ylabel('Insolation ($W/m^2$)')
+        plt.xticks(rotation=45)
+        pltax.legend(loc='lower left')
+        return (directline, measuredline, solar_point, tline, wline)
+
+    def tnow(self, d):
         w = self.weather
 
-        t = np.argmin(abs(w['time'] - d))
-        dtime = w['time'][t]
-        dsolar = w['solarradiation'][t]
-        self.tline.set_xdata([dtime, dtime])
-        self.wline.set_ydata([dsolar, dsolar])
-        self.solar_point.set_data([dtime],[dsolar])
+        return np.argmin(abs(w['time'] - d))
+
+    def update_weather(self, lines, tnow):
+        (directline, measuredline, solar_point, tline, wline) = lines
+        w = self.weather
+
+        dtime = measuredline[0].get_xdata()[tnow]
+        dsolar = measuredline[0].get_ydata()[tnow]
+        tline.set_xdata([dtime, dtime])
+        wline.set_ydata([dsolar, dsolar])
+        solar_point.set_data([dtime],[dsolar])
+
+    def __call__(self, ifile):
+        file = self.files[ifile]
+        d = pd.Timestamp(file.date.astimezone(datetime.timezone.utc).replace(tzinfo=None), tz='UTC')
+        tnow = self.tnow(d)
+        w = self.weather
+
+        self.update_weather(self.main_lines, tnow)
+        self.update_weather(self.zoom_lines, tnow)
+        self.update_weather(self.diff_lines, tnow)
+        self.update_zoom(w['time'][tnow])
+        self.update_imgs(ifile)
+
 
 def _main():
     from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
@@ -125,10 +216,12 @@ def _main():
     weather.rename(columns={'index':'time'}, inplace=True)
     logging.info('Got %s data points for dates %s-%s', len(weather), start, end)
 
-    fig, axs = pylab.subplots(2,1, figsize=[6,8])
+    fig, axs = pylab.subplots(2,3, figsize=[12,9])
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.98, hspace=0, wspace=0.22)
+    #fig.tight_layout()
     plotter = MoviePlotter(fig, axs, weather, files)
-    ani = animation.FuncAnimation(fig, plotter, files,
-        init_func=plotter.init, blit=False, interval=100,
+    ani = animation.FuncAnimation(fig, plotter, range(len(files)),
+        init_func=plotter.init, blit=False, interval=200,
         repeat=False)
 
     if values.output:
